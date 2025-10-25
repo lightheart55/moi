@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Stethoscope, Pill, Home, ClipboardList, Brain, AlertTriangle, Sparkles, Loader, Copy, Heart } from 'lucide-react';
 
 // ==================== SYSTEM INSTRUCTIONS & SCHEMAS ====================
@@ -406,4 +406,4 @@ function App() {
                             </button>
                         </div>
                         <div className="text-gray-700 whitespace-pre-line bg-gray-50 p-4 rounded-lg max-h-96 overflow-y-auto font-mono text-sm">
-                           
+                            {result}
