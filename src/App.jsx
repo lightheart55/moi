@@ -1,4 +1,3 @@
-jsx
 import React, { useState } from 'react';
 import { Stethoscope, Pill, Home, ClipboardList, Brain, AlertTriangle } from 'lucide-react';
 
