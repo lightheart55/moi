@@ -1,0 +1,2 @@
+:root { --bg: #f8fafc; --card: #ffffff; --accent: #0ea5e9; }
+html,body,#root { height: 100%; margin: 0; background: var(--bg); font-family: Inter, system-ui, Arial; }
