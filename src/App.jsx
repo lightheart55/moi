@@ -1,9 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { RefreshCw, Clipboard, AlertTriangle, Send, Heart, Droplet, Zap, Home, Stethoscope, Key, Pill } from 'lucide-react';
 
-// import React, { useState, useCallback, useMemo } from 'react';
-import { RefreshCw, Clipboard, AlertTriangle, Send, Heart, Droplet, Zap, Home, Stethoscope, Key, Pill } from 'lucide-react';
-
 // --- System Instruction for the main 7-point Plan Generation (Feature 1) ---
 const SYSTEM_INSTRUCTION_PLAN = `
 Bạn là Bác sĩ/Nhân viên y tế tại Trạm Y tế Xã/Phường. Nhiệm vụ của bạn là lập một KẾ HOẠCH SƠ CẤP CỨU NGẮN GỌN và CHÍNH XÁC dựa trên 'lý do đến trạm' của bệnh nhân.
@@ -725,8 +722,5 @@ const App = () => {
         </div>
     );
 };
-
-export default App;
-
 
 export default App;
