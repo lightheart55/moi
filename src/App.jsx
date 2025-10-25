@@ -1,116 +1,405 @@
-import React, { useState } from 'react';
-import { Stethoscope, Pill, Home, ClipboardList, Brain, AlertTriangle, Sparkles } from 'lucide-react';
+import React, { useState, useCallback, useMemo } from 'react';
+import { RefreshCw, Clipboard, AlertTriangle, Send, Heart, Droplet, Zap, Home, Stethoscope, Key, Pill } from 'lucide-react';
 
-function App() {
-  const [symptoms, setSymptoms] = useState('');
-  const [apiKey, setApiKey] = useState('');
+// --- System Instruction for the main 7-point Plan Generation (Feature 1) ---
+const SYSTEM_INSTRUCTION_PLAN = `
+Bạn là Bác sĩ/Nhân viên y tế tại Trạm Y tế Xã/Phường. Nhiệm vụ của bạn là lập một KẾ HOẠCH SƠ CẤP CỨU NGẮN GỌN và CHÍNH XÁC dựa trên 'lý do đến trạm' của bệnh nhân.
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-100 py-8 px-4">
-      <div className="max-w-2xl mx-auto">
+Quy tắc Bắt buộc:
+1. Văn phong: PHẢI sử dụng văn phong hành chính y tế, câu ngắn, mục rõ ràng, và thuật ngữ y tế chính xác (tiếng Việt).
+2. Giả định mặc định: Nếu thiếu thông tin quan trọng (tuổi, tiền sử), bạn PHẢI GIẢ ĐỊNH MẶC ĐỊNH: 'Người lớn 18–65 tuổi, không mang thai, không suy gan/thận nặng.' và ghi rõ giả định này ở Mục 1.
+3. Cấu trúc 7 Mục: PHẢI TUÂN THỦ TUYỆT ĐỐI cấu trúc 7 mục sau, bắt đầu bằng tiêu đề in đậm:
+
+**KẾ HOẠCH SƠ CẤP CỨU NGẮN GỌN**
+
+1) GIẢ ĐỊNH NGẮN (1 câu): Ghi các giả định bắt buộc nếu không có dữ liệu.
+2) ĐÁNH GIÁ NHANH (ABC + sinh hiệu): Liệt kê các chỉ số phải đo/kiểm tra ngay: Đường thở (A), Thở (B), Tuần hoàn (C); HA, Mạch, Nhịp thở, SpO₂, Thân nhiệt, Đường máu mao mạch (Glucose).
+3) XỬ TRÍ TẠI TRẠM (bước theo thứ tự, gạch đầu dòng):
+   - Các can thiệp cấp cứu cần thực hiện ngay.
+   - Nêu thuốc gợi ý (tên gốc) và đường dùng ngắn gọn (ví dụ: Paracetamol 500mg uống).
+4) THEO DÕI (gồm chỉ số và tần suất): Những gì phải quan sát và khoảng thời gian theo dõi (ví dụ: Sinh hiệu 15 phút/lần).
+5) RED FLAGS — CHUYỂN TUYẾN NGAY (liệt kê 4–6 dấu hiệu): Nếu có, hướng dẫn chuyển tuyến cấp cứu (Ví dụ: Rối loạn tri giác, HA thấp < 90/60 mmHg).
+6) GHI CHO PHIẾU CHUYỂN (1–2 câu): Chẩn đoán sơ bộ; trạng thái khi chuyển (sinh hiệu); thuốc/đầu can thiệp đã cho; thời gian đề xuất chuyển; phương tiện đề xuất; người đi kèm.
+7) CHỐNG CHỈ ĐỊNH / LƯU Ý NGẮN: Thuốc hoặc biện pháp cần tránh trong hoàn cảnh này.
+
+Không hỏi thêm thông tin. Nếu cần thông tin quan trọng để thay đổi xử trí, chỉ liệt kê 2–3 thông tin cần bổ sung trong phần XỬ TRÍ TẠI TRẠM dưới dạng 'Cần bổ sung thông tin:'.
+`;
+
+// --- System Instruction and Schema for Triage Generation (Feature 2) ---
+const SYSTEM_INSTRUCTION_TRIAGE = `
+Bạn là chuyên gia y tế khẩn cấp. Dựa trên lý do đến trạm, hãy đưa ra đánh giá nhanh về mức độ ưu tiên cấp cứu (Triage) và 3 hành động kiểm tra/can thiệp ưu tiên nhất.
+Định dạng đầu ra PHẢI là JSON theo schema được cung cấp. Không thêm bất kỳ văn bản giải thích nào khác. Sử dụng thang phân loại Triage 5 cấp độ (ví dụ: Cấp 1 - Hồi sức, Cấp 5 - Không khẩn cấp).
+`;
+
+const TRIAGE_SCHEMA = {
+    type: "OBJECT",
+    properties: {
+        triageLevel: { type: "STRING", description: "Mức độ cấp cứu (ví dụ: Cấp 1, Cấp 2, Cấp 3, Cấp 4, Cấp 5)" },
+        priority: { type: "STRING", description: "Tên mức độ ưu tiên (ví dụ: Hồi sức, Cấp cứu, Khẩn cấp, Bán khẩn cấp, Không khẩn cấp)" },
+        summary: { type: "STRING", description: "Tóm tắt ngắn 1 câu về tình trạng và mức độ nguy hiểm" },
+        immediateActions: {
+            type: "ARRAY",
+            description: "3 hành động kiểm tra/can thiệp ưu tiên nhất cần thực hiện ngay",
+            items: { type: "STRING" }
+        }
+    },
+    propertyOrdering: ["triageLevel", "priority", "summary", "immediateActions"]
+};
+
+// --- System Instruction for Home Care Instructions (Feature 3) ---
+const SYSTEM_INSTRUCTION_HOME_CARE = `
+Bạn là Nhân viên y tế/Bác sĩ tại Trạm Y tế Xã. Nhiệm vụ của bạn là soạn thảo một bản Hướng dẫn Chăm sóc Tại nhà ngắn gọn, rõ ràng, và dễ hiểu dành cho bệnh nhân hoặc người nhà.
+Cấu trúc PHẢI bao gồm 4 mục chính (ghi bằng tiêu đề in đậm):
+1.  **CÁCH SỬ DỤNG THUỐC ĐÃ CẤP** (Tên gốc, liều dùng, tần suất).
+2.  **CHĂM SÓC KHÔNG DÙNG THUỐC** (Ví dụ: nghỉ ngơi, chườm lạnh, bù nước).
+3.  **CHẾ ĐỘ ĂN UỐNG VÀ SINH HOẠT**.
+4.  **DẤU HIỆU CẦN ĐƯA TRỞ LẠI TRẠM NGAY** (Liệt kê 3-4 dấu hiệu nguy hiểm).
+Văn phong: Gần gũi, động viên, sử dụng ngôn ngữ phổ thông, không dùng thuật ngữ y tế chuyên sâu (ví dụ: thay "Hạ sốt bằng Paracetamol" thành "Uống thuốc hạ sốt (Paracetamol)").
+`;
+
+// --- System Instruction and Schema for Differential Diagnosis (Feature 4) ---
+const SYSTEM_INSTRUCTION_DIFFERENTIAL = `
+Bạn là một chuyên gia y tế chẩn đoán. Dựa trên 'lý do đến trạm' của bệnh nhân (triệu chứng/chấn thương), hãy tạo ra 3-4 chẩn đoán phân biệt có thể xảy ra nhất.
+Định dạng đầu ra PHẢI là JSON theo schema được cung cấp. Không thêm bất kỳ văn bản giải thích nào khác.
+`;
+
+const DIFFERENTIAL_SCHEMA = {
+    type: "OBJECT",
+    properties: {
+        differentialDiagnosis: {
+            type: "ARRAY",
+            description: "Danh sách các chẩn đoán phân biệt có thể xảy ra",
+            items: {
+                type: "OBJECT",
+                properties: {
+                    diagnosis: { type: "STRING", description: "Tên chẩn đoán (tiếng Việt)" },
+                    likelihood: { type: "STRING", description: "Mức độ ưu tiên/khả năng (ví dụ: Rất cao, Trung bình, Thấp)" },
+                    rationale: { type: "STRING", description: "Lý do ngắn gọn dựa trên triệu chứng" }
+                },
+                propertyOrdering: ["diagnosis", "likelihood", "rationale"]
+            }
+        }
+    },
+    propertyOrdering: ["differentialDiagnosis"]
+};
+
+// --- System Instruction and Schema for Drug Advice (Feature 5) ---
+const SYSTEM_INSTRUCTION_DRUG_ADVICE = `
+Bạn là một chuyên gia dược lâm sàng. Dựa trên 'lý do đến trạm' (triệu chứng/chấn thương), hãy đưa ra gợi ý về thuốc điều trị ban đầu (First Line) và các cảnh báo/chống chỉ định quan trọng nhất.
+Giả định mặc định: Người lớn 18–65 tuổi, không mang thai, không suy gan/thận nặng.
+Định dạng đầu ra PHẢI là JSON theo schema được cung cấp. Không thêm bất kỳ văn bản giải thích nào khác.
+`;
+
+const DRUG_ADVICE_SCHEMA = {
+    type: "OBJECT",
+    properties: {
+        firstLineDrug: {
+            type: "OBJECT",
+            properties: {
+                name: { type: "STRING", description: "Tên thuốc gốc (ví dụ: Paracetamol)" },
+                dosage: { type: "STRING", description: "Liều lượng và đường dùng khuyến nghị cho một lần dùng (ví dụ: 500mg uống)" },
+                frequency: { type: "STRING", description: "Tần suất dùng khuyến nghị (ví dụ: Mỗi 4-6 giờ khi cần, tối đa 4g/ngày)" },
+                indication: { type: "STRING", description: "Chỉ định chính cho tình trạng này" }
+            },
+            propertyOrdering: ["name", "dosage", "frequency", "indication"]
+        },
+        criticalWarnings: {
+            type: "ARRAY",
+            description: "3 Cảnh báo/Chống chỉ định quan trọng nhất liên quan đến thuốc này",
+            items: { type: "STRING" }
+        }
+    },
+    propertyOrdering: ["firstLineDrug", "criticalWarnings"]
+};
+
+
+// Helper function to handle exponential backoff for API calls
+const fetchWithRetry = async (url, options, maxRetries = 5) => {
+    let lastError = null;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                // Try to read error body if available
+                const errorBody = await response.text();
+                throw new Error(`HTTP error! status: ${response.status}. Response: ${errorBody.substring(0, 100)}...`);
+            }
+            return response;
+        } catch (error) {
+            lastError = error;
+            const delay = Math.pow(2, i) * 1000;
+            if (i < maxRetries - 1) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+    throw new Error(`API failed after ${maxRetries} retries. Last error: ${lastError.message}`);
+};
+
+// --- PARSING HELPERS for Plan (Feature 1) ---
+const parsePlan = (planText) => {
+    if (!planText) return [];
+    // Split by the pattern \n followed by a number and parenthesis (e.g., \n1) )
+    const sections = planText.split(/\n\s*(?=\d+\) )/);
+    return sections.filter(s => s.trim() !== '').map((section, index) => {
+        // Use a more robust regex to capture the number, title, and content
+        const match = section.match(/^(\d+\) [^\n:]+):?\s*(.*)/s);
+        if (match) {
+            const [_, title, content] = match;
+            return { id: index, title: title.trim(), content: content.trim() };
+        }
+        // Handle the main title if it exists
+        if (section.startsWith('**KẾ HOẠCH')) {
+            return null; // Skip main title
+        }
+        return { id: index, title: 'Nội dung', content: section.trim() };
+    }).filter(s => s !== null);
+};
+
+// --- PARSING HELPERS for Home Care (Feature 3) ---
+const parseHomeCare = (homeCareText) => {
+    if (!homeCareText) return [];
+    // Use regex to split by the bold titles (e.g., **TITLE**)
+    const sections = homeCareText.split(/(\*\*[^**]+\*\*)/).filter(s => s.trim());
+    const result = [];
+    for (let i = 0; i < sections.length; i += 2) {
+        if (sections[i + 1]) {
+            result.push({
+                id: i / 2,
+                title: sections[i].replace(/\*\*|:/g, '').trim(),
+                content: sections[i+1].trim()
+            });
+        }
+    }
+    return result;
+};
+
+
+const App = () => {
+    const [reason, setReason] = useState('');
+    // State for API Key, loads from localStorage for persistence
+    // NOTE: This fallback ensures the app works correctly outside the Canvas environment.
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('geminiApiKey') || ''); 
+    const [plan, setPlan] = useState('');
+    const [triageResult, setTriageResult] = useState(null);
+    const [homeCareInstructions, setHomeCareInstructions] = useState('');
+    const [differentialResult, setDifferentialResult] = useState(null); 
+    const [drugAdviceResult, setDrugAdviceResult] = useState(null);
+    
+    // State variables for loading status
+    const [isLoadingPlan, setIsLoadingPlan] = useState(false);
+    const [isLoadingTriage, setIsLoadingTriage] = useState(false);
+    const [isLoadingHomeCare, setIsLoadingHomeCare] = useState(false);
+    const [isLoadingDifferential, setIsLoadingDifferential] = useState(false);
+    const [isLoadingDrugAdvice, setIsLoadingDrugAdvice] = useState(false);
+    
+    const [error, setError] = useState(null);
+
+    const parsedPlan = useMemo(() => parsePlan(plan), [plan]);
+    const parsedHomeCare = useMemo(() => parseHomeCare(homeCareInstructions), [homeCareInstructions]);
+
+    // Handler to update API key and persist it
+    const handleApiKeyChange = (e) => {
+        const newKey = e.target.value;
+        setApiKey(newKey);
+        localStorage.setItem('geminiApiKey', newKey); // Persist key
+    };
+
+    const handleAPICall = useCallback(async (type) => {
+        if (!reason.trim()) {
+            setError('Vui lòng nhập "Lý do đến trạm" để bắt đầu.');
+            return;
+        }
+
+        // MANDATORY: Check for API Key
+        if (!apiKey.trim()) {
+            setError('Lỗi: Vui lòng nhập Gemini API Key để thực hiện chức năng này.');
+            return;
+        }
+
+        setError(null);
+        let setLoadState, setContent, systemInstruction, isJson = false, schema = null;
         
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-full shadow-lg mb-4">
-            <Sparkles className="w-8 h-8 text-blue-500" />
-          </div>
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">
-            CÔNG CỤ HỖ TRỢ <br /> CHẨN ĐOÁN VÀ CẤP CỨU
-          </h1>
-          <p className="text-gray-600 text-lg">
-            Sử dụng trí tuệ nhân tạo để lập kế hoạch, phân loại cấp cứu và chẩn đoán
-          </p>
-        </div>
+        if (type === 'plan') {
+            setLoadState = setIsLoadingPlan;
+            setContent = setPlan;
+            systemInstruction = SYSTEM_INSTRUCTION_PLAN;
+        } else if (type === 'triage') {
+            setLoadState = setIsLoadingTriage;
+            setContent = setTriageResult;
+            systemInstruction = SYSTEM_INSTRUCTION_TRIAGE;
+            isJson = true;
+            schema = TRIAGE_SCHEMA;
+        } else if (type === 'homecare') {
+            setLoadState = setIsLoadingHomeCare;
+            setContent = setHomeCareInstructions;
+            systemInstruction = SYSTEM_INSTRUCTION_HOME_CARE;
+        } else if (type === 'differential') { 
+            setLoadState = setIsLoadingDifferential;
+            setContent = setDifferentialResult;
+            systemInstruction = SYSTEM_INSTRUCTION_DIFFERENTIAL;
+            isJson = true;
+            schema = DIFFERENTIAL_SCHEMA;
+        } else if (type === 'drugAdvice') {
+            setLoadState = setIsLoadingDrugAdvice;
+            setContent = setDrugAdviceResult;
+            systemInstruction = SYSTEM_INSTRUCTION_DRUG_ADVICE;
+            isJson = true;
+            schema = DRUG_ADVICE_SCHEMA;
+        } else {
+            return;
+        }
 
-        {/* Lý do đến trạm */}
-        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
-          <label className="block text-xl font-semibold text-gray-800 mb-4 flex items-center">
-            <Stethoscope className="w-6 h-6 mr-3 text-blue-500" />
-            Lý do đến trạm (Triệu chứng / Chấn thương)
-          </label>
-          <textarea
-            className="w-full h-32 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none text-gray-700 placeholder-gray-400"
-            placeholder="Ví dụ: Bệnh nhân bị sốt cao 39.5°C kèm đau đầu và nôn ói. Hoặc: Bị té xe, chấn thương cẳng chân phải, đang chảy máu."
-            value={symptoms}
-            onChange={(e) => setSymptoms(e.target.value)}
-          />
-        </div>
+        setLoadState(true);
+        setContent(null); // Clear previous result
 
-        {/* API Key */}
-        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
-          <label className="block text-xl font-semibold text-gray-800 mb-4 flex items-center">
-            <Brain className="w-6 h-6 mr-3 text-orange-500" />
-            Gemini API Key (Bắt buộc khi triển khai ngoài)
-          </label>
-          <input
-            type="password"
-            className="w-full p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-gray-700 placeholder-gray-400"
-            placeholder="Nhập API Key của bạn tại đây..."
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-          />
-        </div>
+        const modelName = "gemini-2.5-flash-preview-09-2025";
+        // Use the API key from the state for the request
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-        {/* Canvas Area */}
-        <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
-          <div className="border-2 border-dashed border-gray-300 rounded-xl h-40 flex items-center justify-center bg-gray-50">
-            <p className="text-gray-500 text-center">
-              🎨 Canvas tại đây...<br/>
-              <span className="text-sm">(Khu vực vẽ hoặc hiển thị hình ảnh)</span>
-            </p>
-          </div>
-        </div>
+        const userQuery = `Lý do đến trạm: "${reason.trim()}"`;
 
-        {/* Action Buttons Grid */}
-        <div className="grid grid-cols-2 gap-4 mb-8">
-          <button className="bg-blue-500 hover:bg-blue-600 text-white py-4 px-2 rounded-xl shadow-md transition-all duration-200 flex flex-col items-center justify-center">
-            <ClipboardList className="w-8 h-8 mb-2" />
-            <span className="font-semibold text-lg">HD Tại nhà</span>
-          </button>
-          <button className="bg-green-500 hover:bg-green-600 text-white py-4 px-2 rounded-xl shadow-md transition-all duration-200 flex flex-col items-center justify-center">
-            <Pill className="w-8 h-8 mb-2" />
-            <span className="font-semibold text-lg">Gợi ý Thuốc</span>
-          </button>
-          <button className="bg-purple-500 hover:bg-purple-600 text-white py-4 px-2 rounded-xl shadow-md transition-all duration-200 flex flex-col items-center justify-center">
-            <Stethoscope className="w-8 h-8 mb-2" />
-            <span className="font-semibold text-lg">Chẩn đoán PB</span>
-          </button>
-          <button className="bg-red-500 hover:bg-red-600 text-white py-4 px-2 rounded-xl shadow-md transition-all duration-200 flex flex-col items-center justify-center">
-            <Home className="w-8 h-8 mb-2" />
-            <span className="font-semibold text-lg">Lập KẾ HOẠCH</span>
-          </button>
-        </div>
+        let payload = {
+            contents: [{ parts: [{ text: userQuery }] }],
+            systemInstruction: {
+                parts: [{ text: systemInstruction }]
+            },
+        };
 
-        {/* Information Cards */}
-        <div className="space-y-6">
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
-            <h3 className="font-bold text-blue-800 text-xl mb-3 flex items-center">
-              <AlertTriangle className="w-6 h-6 mr-3" />
-              GỢI Ý CHẨN ĐOÁN PHÂN BIỆT
-            </h3>
-            <p className="text-blue-700">
-              Nhấn nút "Chẩn đoán Phân biệt" để nhận gợi ý chẩn đoán dựa trên triệu chứng.
-            </p>
-          </div>
+        if (isJson) {
+            payload.generationConfig = {
+                responseMimeType: "application/json",
+                responseSchema: schema
+            };
+        }
 
-          <div className="bg-green-50 border border-green-200 rounded-2xl p-6">
-            <h3 className="font-bold text-green-800 text-xl mb-3 flex items-center">
-              <Pill className="w-6 h-6 mr-3" />
-              GỢI Ý THUỐC ĐIỀU TRỊ VÀ CẢNH BÁO
-            </h3>
-            <p className="text-green-700">
-              Nhấn nút "Gợi Ý Thuốc" để nhận thông tin về thuốc điều trị ban đầu và các cảnh báo liên quan.
-            </p>
-          </div>
-        </div>
+        try {
+            const response = await fetchWithRetry(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-        {/* Footer */}
-        <div className="text-center mt-8 text-gray-500">
-          <p>🚑 Ứng dụng hỗ trợ y tế - Phiên bản 1.0</p>
-        </div>
-      </div>
-    </div>
-  );
-}
+            const result = await response.json();
+            const candidate = result.candidates?.[0];
 
-export default App;
+            if (isJson) {
+                const jsonText = candidate?.content?.parts?.[0]?.text;
+                if (jsonText) {
+                    try {
+                        const parsedJson = JSON.parse(jsonText);
+                        if (type === 'triage') setTriageResult(parsedJson);
+                        if (type === 'differential') setDifferentialResult(parsedJson); 
+                        if (type === 'drugAdvice') setDrugAdviceResult(parsedJson);
+                    } catch (e) {
+                        console.error('JSON Parse Error:', e);
+                        setError(`Lỗi phân tích kết quả ${type === 'triage' ? 'Triage' : type === 'differential' ? 'Chẩn đoán Phân biệt' : 'Gợi ý Thuốc'}. Vui lòng thử lại.`);
+                    }
+                } else {
+                    setError('Không thể tạo kết quả JSON. Vui lòng thử lại.');
+                }
+            } else {
+                const generatedText = candidate?.content?.parts?.[0]?.text || 'Không thể tạo nội dung. Vui lòng thử lại.';
+                const cleanedText = generatedText.replace(/^```\w*\n|```$/g, '').trim();
+                setContent(cleanedText);
+            }
+
+        } catch (err) {
+            console.error('API Error:', err);
+            setError(`Đã xảy ra lỗi API: ${err.message}`);
+        } finally {
+            setLoadState(false);
+        }
+    }, [reason, apiKey]);
+
+    const generatePlan = () => handleAPICall('plan');
+    const generateTriage = () => handleAPICall('triage');
+    const generateHomeCare = () => handleAPICall('homecare');
+    const generateDifferential = () => handleAPICall('differential'); 
+    const generateDrugAdvice = () => handleAPICall('drugAdvice');
+
+    const copyToClipboard = (text, name) => {
+        if (text) {
+            const tempTextArea = document.createElement('textarea');
+            // Use the raw plan text for copy operation
+            const textToCopy = (name === "Kế hoạch Sơ cấp cứu") ? plan : 
+                               (name === "Hướng dẫn Chăm sóc Tại nhà") ? homeCareInstructions :
+                               JSON.stringify(text, null, 2);
+                               
+            tempTextArea.value = textToCopy;
+            document.body.appendChild(tempTextArea);
+            tempTextArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempTextArea);
+
+            // Using custom alert substitute
+            const messageBox = document.createElement('div');
+            messageBox.style.cssText = 'position:fixed;top:20px;right:20px;padding:10px 20px;background-color:#4CAF50;color:white;border-radius:5px;z-index:1000;box-shadow:0 4px 6px rgba(0,0,0,0.1);';
+            messageBox.textContent = `Đã sao chép ${name} vào clipboard!`;
+            document.body.appendChild(messageBox);
+            setTimeout(() => {
+                document.body.removeChild(messageBox);
+            }, 2000);
+        }
+    };
+
+    const getTriageColor = (level) => {
+        switch (level) {
+            case 'Cấp 1': return 'bg-red-600 text-white';
+            case 'Cấp 2': return 'bg-orange-500 text-white';
+            case 'Cấp 3': return 'bg-yellow-400 text-gray-800';
+            case 'Cấp 4': return 'bg-green-500 text-white';
+            case 'Cấp 5': return 'bg-blue-500 text-white';
+            default: return 'bg-gray-400 text-white';
+        }
+    };
+
+    const getLikelihoodColor = (likelihood) => {
+        const normalized = likelihood.toLowerCase().trim();
+        if (normalized.includes('rất cao')) return 'bg-red-200 text-red-800 border-red-300';
+        if (normalized.includes('cao')) return 'bg-orange-200 text-orange-800 border-orange-300';
+        if (normalized.includes('trung bình')) return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+        if (normalized.includes('thấp')) return 'bg-green-100 text-green-800 border-green-300';
+        return 'bg-gray-100 text-gray-800 border-gray-300';
+    };
+    
+    const isAnyLoading = isLoadingPlan || isLoadingTriage || isLoadingHomeCare || isLoadingDifferential || isLoadingDrugAdvice;
+
+    return (
+        <div className="min-h-screen p-4 sm:p-8 bg-gray-50 font-sans">
+            <script src="https://cdn.tailwindcss.com"></script>
+            <style jsx="true">{`
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+                body { font-family: 'Inter', sans-serif; }
+                .card-shadow { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+                .content-list li::marker { content: '• '; font-size: 1.2em; color: #3b82f6; }
+                .content-list ul { margin-left: 1.5rem; }
+            `}</style>
+            <div className="max-w-4xl mx-auto">
+                <header className="mb-8 text-center">
+                    <h1 className="text-3xl sm:text-4xl font-bold text-sky-800 flex items-center justify-center">
+                        <Heart className="w-8 h-8 mr-3 text-red-500" />
+                        CÔNG CỤ HỖ TRỢ CHẨN ĐOÁN VÀ CẤP CỨU TRẠM Y TẾ
+                    </h1>
+                    <p className="text-gray-600 mt-2">Sử dụng trí tuệ nhân tạo để lập kế hoạch, phân loại cấp cứu và chẩn đoán.</p>
+                </header>
+
+                {/* Input Area */}
+                <div className="bg-white p-6 rounded-xl card-shadow mb-8 border border-sky-100">
+                    <label htmlFor="reason-input" className="block text-lg font-semibold text-gray-700 mb-3 flex items-center">
+                        <Droplet className="w-5 h-5 mr-2 text-sky-600" />
+                        Lý do đến trạm (Triệu chứng / Chấn thương)
+                    </label>
+                    <textarea
+                        id="reason-input"
+                        className="w-full p-4 border border-gray-300 rounded-lg focus:ring-sky-500 focus:border-sky-500 transition duration-150 ease-in-out resize-y min-h-[120px]"
+                        placeholder="Ví dụ: Bệnh nhân bị sốt cao 39.5°C kèm đau đầu và nôn ói. Hoặc: Bị té xe, chấn thương cẳng chân phải, đang chảy máu."
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                        rows="4"
+                        disabled={isAnyLoading}
+                    ></textarea>
+
+                    {/* API Key Input Field */}
+                    <div className="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-300">
+                        <label htmlFor="api-key-input" className="block text-sm font-bold text-yellow-80
